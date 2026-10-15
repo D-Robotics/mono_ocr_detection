@@ -1,0 +1,14 @@
+{
+  "model_file": "config/ppocrv6_medium_det_int8_4k_m.hbm",
+  "model_name": "ppocrv6_medium_det_int8_4k_m",
+  "task_num": 1,
+  "class_num": 1,
+  "model_input_width": 3840,
+  "model_input_height": 2176,
+  "thresh": 0.2,
+  "box_thresh": 0.2,
+  "max_candidates": 1000,
+  "unclip_ratio": 1.5,
+  "min_size": 3.0,
+  "nms_iou": 0.5
+}
