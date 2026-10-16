@@ -470,16 +470,39 @@ void MonoOcrDetectionNode::ProcessSharedMemNv12(const uint8_t *data,
   std::shared_ptr<hobot::dnn_node::NV12PyramidInput> pyramid = nullptr;
 
   if ("nv12" == encoding) {
-    // 不做 CPU 预缩放：原始帧直接建 pyramid，由 BPU NV12 预处理一次拉伸到
-    // 模型输入。双重重采样会模糊小字（4K 模型小标注漏检的根因），且省 CPU。
-    // parser 输出的框在模型空间，resized 需置为模型输入尺寸，PostProcess 才会
-    // 按 img/model 的比值把框回投到原图分辨率（resized=msg 会导致比例恒 1.0，
-    // web 叠加时框整体偏移）。
-    dnn_output->resized_h = model_input_height_;
-    dnn_output->resized_w = model_input_width_;
-    pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
-        reinterpret_cast<const char*>(data), msg_h, msg_w,
-        model_input_height_, model_input_width_);
+    // GetNV12PyramidFromNV12Img 不缩放：仅把输入左上角 min(输入,模型) 区域
+    // 拷入模型缓冲（超出部分成为盲区）。因此：
+    //  - 帧与模型等尺寸（相机 3840x2160）：1:1 直通，零重采样保清晰度；
+    //  - 其他尺寸（fb 任意 4K 图）：等比 letterbox 缩放到模型内（左上对齐、
+    //    右下补 0），保证全图覆盖；resized 记录内容区尺寸，PostProcess 按
+    //    img/resized 的比值把框回投到原图分辨率。
+    if (msg_w == static_cast<uint32_t>(model_input_width_) &&
+        msg_h == static_cast<uint32_t>(model_input_height_)) {
+      dnn_output->resized_h = msg_h;
+      dnn_output->resized_w = msg_w;
+      pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
+          reinterpret_cast<const char*>(data), msg_h, msg_w,
+          model_input_height_, model_input_width_);
+    } else {
+      // 大图：复用 ResizeNV12Img（hobotcv 等比缩放），内容区尺寸记入 resized，
+      // PostProcess 按 img/resized 回投；金字塔补边由 GetNV12PyramidFromNV12Img
+      // 完成（内容贴左上、右下补 0），全图覆盖无盲区。
+      cv::Mat out_img;
+      if (ResizeNV12Img(reinterpret_cast<const char *>(data),
+                        msg_h, msg_w,
+                        dnn_output->resized_h, dnn_output->resized_w,
+                        model_input_height_, model_input_width_,
+                        out_img, dnn_output->ratio) < 0) {
+        RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
+                     "Resize nv12 img fail!");
+        return;
+      }
+      uint32_t out_w = out_img.cols;
+      uint32_t out_h = out_img.rows * 2 / 3;
+      pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
+          reinterpret_cast<const char *>(out_img.data),
+          out_h, out_w, model_input_height_, model_input_width_);
+    }
   } else {
     RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
                  "Unsupported img encoding: %s, only nv12 for shared mem.",
