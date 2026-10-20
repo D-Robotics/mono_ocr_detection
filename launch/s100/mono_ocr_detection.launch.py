@@ -169,6 +169,7 @@ def generate_launch_description():
             {"is_shared_mem_sub": 1},
             {"dump_render_img": LaunchConfiguration("mono_ocr_detection_dump_render_img")},
             {"ai_msg_pub_topic_name": LaunchConfiguration("mono_ocr_detection_msg_pub_topic_name")},
+            {'stale_threshold_ms': 2000},
             # 算法固定订阅 HbmMsg2160P 全分辨率帧，话题与图片源对齐
             {"sharedmem_img_topic_name": "/hbmem_img"}
         ],

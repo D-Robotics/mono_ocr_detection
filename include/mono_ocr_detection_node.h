@@ -89,7 +89,9 @@ class MonoOcrDetectionNode : public DnnNode {
   std::string image_file_ = "config/component.jpg";
   int feed_type_ = 0;
   // 陈旧帧丢弃阈值 ms（参数 stale_threshold_ms）
-  int stale_threshold_ms_ = 400;
+  // hobotcv letterbox 下 det 消费 ~3fps，帧龄 ~70ms；门槛 800ms 覆盖
+  // 输入超速时的积压老化（实测积压帧龄 ~0.9s 时应限输入帧率而非调高门槛）
+  int stale_threshold_ms_ = 800;
   int is_shared_mem_sub_ = 0;
   int dump_render_img_ = 0;
   int task_num_ = 4;
