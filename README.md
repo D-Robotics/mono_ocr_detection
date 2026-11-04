@@ -10,12 +10,9 @@ mono_ocr_detection algorithm node based on dnn_node. JSON config driven
 
 ```json
 {
-    "model_file": "config/ppocrv6_medium_det_int8_4k_m.hbm",
-    "model_name": "ppocrv6_medium_det_int8_4k_m",
+    "model_file": "config/ppocrv6_medium_det_int8_640_m_m.hbm",
     "task_num": 1,
     "class_num": 1,
-    "model_input_width": 3840,
-    "model_input_height": 2176,
     "thresh": 0.2,
     "box_thresh": 0.2,
     "max_candidates": 1000,
@@ -26,10 +23,9 @@ mono_ocr_detection algorithm node based on dnn_node. JSON config driven
 
 ```
 
-> TODO: replace placeholder values (model_output_count / reg_max / strides /
-> score_threshold / nms_threshold / nms_top_k / output_order) with your algorithm's real values. 
-
 ## Build
+
+RDK X5: `bash robot_dev_config/build.sh -p X5 -s mono_ocr_detection`.
 
 RDK S100: `bash robot_dev_config/build.sh -p S100 -s mono_ocr_detection`.
 
@@ -92,6 +88,7 @@ SHM zero-copy.
 |---|---|---|
 | `config_file` | `config/mono_ocr_detection_workconfig.json` | JSON config file |
 | `feed_type` | `0` | 0: local image, 1: subscribe image |
+| `resolution` | `1080P` | share mem msg type: `1080P` / `2160P`  |
 | `image` | `config/component.jpg` | feedback image path |
 | `dump_render_img` | `0` | save rendered image |
 | `is_shared_mem_sub` | `0` | subscribe `/hbmem_img` via shared memory |

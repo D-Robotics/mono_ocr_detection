@@ -33,14 +33,18 @@ if (${SHARED_MEM})
   add_definitions(-DSHARED_MEM_ENABLED)
 endif ()
 
-if(PLATFORM_S100)
+if(PLATFORM_X5)
+  message("build platform X5")
+  set(SYS_ROOT ${CMAKE_SYSROOT})
+  set(PREFIX_PATH x5)
+elseif(PLATFORM_S100)
   message("build platform S100")
   set(SYS_ROOT ${CMAKE_SYSROOT})
   set(PREFIX_PATH s100)
 else()
-  message("invalid platform, build platform S100 default")
+  message("invalid platform, build platform X5 default")
   set(SYS_ROOT ${CMAKE_SYSROOT})
-  set(PREFIX_PATH s100)
+  set(PREFIX_PATH x5)
 endif()
 
 message("PREFIX_PATH is " ${PREFIX_PATH})
@@ -114,10 +118,13 @@ install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib)
 
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/launch/${PREFIX_PATH}/
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/launch/
   DESTINATION share/${PROJECT_NAME}/launch)
 
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/config/
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/config/${PREFIX_PATH}/
+  DESTINATION lib/${PROJECT_NAME}/config/)
+
+install(FILES ${PROJECT_SOURCE_DIR}/config/component.jpg
   DESTINATION lib/${PROJECT_NAME}/config/)
 
 ament_package()

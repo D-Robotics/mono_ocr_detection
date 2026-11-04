@@ -10,12 +10,9 @@
 
 ```json
 {
-    "model_file": "config/ppocrv6_medium_det_int8_4k_m.hbm",
-    "model_name": "ppocrv6_medium_det_int8_4k_m",
+    "model_file": "config/ppocrv6_medium_det_int8_640_m.hbm",
     "task_num": 1,
     "class_num": 1,
-    "model_input_width": 3840,
-    "model_input_height": 2176,
     "thresh": 0.2,
     "box_thresh": 0.2,
     "max_candidates": 1000,
@@ -25,13 +22,11 @@
 }
 ```
 
-> TODO: `model_output_count / reg_max / strides / score_threshold /
-> nms_threshold / nms_top_k / output_order` 等占位值需替换为算法真实值。
-
 ## 编译
 
-RDK S100：
-`bash robot_dev_config/build.sh -p S100 -s mono_ocr_detection`。
+RDK X5：`bash robot_dev_config/build.sh -p X5 -s mono_ocr_detection`。
+
+RDK S100：`bash robot_dev_config/build.sh -p S100 -s mono_ocr_detection`。
 
 ## 运行
 
@@ -91,6 +86,7 @@ ros2 launch mono_ocr_detection mono_ocr_detection_component.launch.py image_sour
 |---|---|---|
 | `config_file` | `config/mono_ocr_detection_workconfig.json` | JSON 配置文件 |
 | `feed_type` | `0` | 0: 本地图片，1: 订阅图片 |
+| `resolution` | `1080P` | 共享内存消息档位：`1080P` / `2160P`  |
 | `image` | `config/component.jpg` | 回灌图片路径 |
 | `dump_render_img` | `0` | 保存渲染结果图 |
 | `is_shared_mem_sub` | `0` | 通过共享内存订阅 `/hbmem_img` |

@@ -95,10 +95,8 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   this->declare_parameter<std::string>("ros_img_sub_topic_name", ros_img_sub_topic_name_);
   this->declare_parameter<std::string>("ai_msg_pub_topic_name", ai_msg_pub_topic_name_);
   // 模型选择参数：非空时覆盖 workconfig 里的同名配置（用于免改配置切换模型）
-  this->declare_parameter<std::string>("model_file", "");
-  this->declare_parameter<std::string>("model_name", "");
+  this->declare_parameter<std::string>("resolution", "1080P");
   // task_num 覆盖：大分辨率模型（4K）单实例 ION 占用大，需降低并行任务数
-  this->declare_parameter<int>("task_num", 0);
   this->declare_parameter<std::string>("sharedmem_img_topic_name",
                                        sharedmem_img_topic_name_);
   this->get_parameter<std::string>("config_file", config_file_);
@@ -108,6 +106,22 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   this->get_parameter<int>("is_shared_mem_sub", is_shared_mem_sub_);
   this->get_parameter<std::string>("ros_img_sub_topic_name", ros_img_sub_topic_name_);
   this->get_parameter<std::string>("ai_msg_pub_topic_name", ai_msg_pub_topic_name_);
+  this->get_parameter<std::string>("resolution", resolution_);
+  this->get_parameter<std::string>("sharedmem_img_topic_name", sharedmem_img_topic_name_);
+
+  RCLCPP_WARN_STREAM(this->get_logger(),
+    "Parameters:"
+    << std::setprecision(2) << std::fixed
+    << "\n\t        config_file: " << config_file_
+    << "\n\t        feed_type: " << feed_type_
+    << "\n\t        image: " << image_file_
+    << "\n\t        dump_render_img: " << dump_render_img_
+    << "\n\t        is_shared_mem_sub: " << is_shared_mem_sub_
+    << "\n\t        ros_img_sub_topic_name: " << ros_img_sub_topic_name_
+    << "\n\t        ai_msg_pub_topic_name: " << ai_msg_pub_topic_name_
+    << "\n\t        resolution: " << resolution_
+    << "\n\t        sharedmem_img_topic_name: " << sharedmem_img_topic_name_
+  );
 
   if (LoadConfig() != 0) {
     RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"), "Load config fail!");
@@ -132,7 +146,7 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   // 输入尺寸，查询成功则覆盖 workconfig 的值 —— 切换模型无需改配置。
   {
     int w = 0, h = 0;
-    if (QueryModelInputSizeFromHbm(w, h) == 0 &&
+    if (GetModelInputSize(0, w, h) == 0 &&
         (w != model_input_width_ || h != model_input_height_)) {
       RCLCPP_INFO(rclcpp::get_logger("mono_ocr_detection"),
                   "Model input size auto-detected: %dx%d (config had %dx%d, override)",
@@ -156,14 +170,25 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   } else if (feed_type_ == 1) {
     if (is_shared_mem_sub_) {
 #ifdef SHARED_MEM_ENABLED
+      if (resolution_ == "1080P") {
+        sharedmem_img_subscription_ =
+            this->create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
+                sharedmem_img_topic_name_, rclcpp::SensorDataQoS().keep_last(1),
+                std::bind(&MonoOcrDetectionNode::SharedMemImgProcess, this,
+                          std::placeholders::_1));
+      } else if (resolution_ == "2160P") {
       sharedmem_img_subscription_4k_ =
           this->create_subscription<hbm_img_msgs::msg::HbmMsg2160P>(
               sharedmem_img_topic_name_, rclcpp::SensorDataQoS().keep_last(1),
-              std::bind(&MonoOcrDetectionNode::SharedMemImgProcess, this,
+              std::bind(&MonoOcrDetectionNode::SharedMem2160PImgProcess, this,
                         std::placeholders::_1));
       RCLCPP_WARN(rclcpp::get_logger("mono_ocr_detection"),
                   "Subscribe 4K shared mem img: %s (HbmMsg2160P)",
                   sharedmem_img_topic_name_.c_str());
+      } else {
+        RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
+                     "Unsupported shared mem resolution: %s", resolution_.c_str());
+      }     
 #else
       RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"), "Unsupport shared mem");
 #endif
@@ -226,55 +251,6 @@ int MonoOcrDetectionNode::LoadConfig() {
                  config_file_.c_str());
     return -1;
   }
-  return 0;
-}
-
-int MonoOcrDetectionNode::QueryModelInputSizeFromHbm(int &w, int &h) {
-  // 直接用 hbDNN 原生 API 查询 NV12 双输入模型的 Y plane 形状：
-  // x_y validShape = [1, H, W, 1]（dnn_node 的 GetModelInputSize 按 NCHW
-  // 解析 NHWC 会得到 width=1，这里绕开它）。
-  hbDNNPackedHandle_t packed_dnn = nullptr;
-  hbDNNHandle_t dnn_handle = nullptr;
-  const char *model_file = model_file_name_.c_str();
-  int ret = hbDNNInitializeFromFiles(&packed_dnn, &model_file, 1);
-  if (ret != 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNInitializeFromFiles(%s) failed: %d", model_file, ret);
-    return -1;
-  }
-  const char *name = model_name_.empty() ? nullptr : model_name_.c_str();
-  ret = hbDNNGetModelHandle(&dnn_handle, packed_dnn, name);
-  if (ret != 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNGetModelHandle(%s) failed: %d", name, ret);
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  int32_t input_count = 0;
-  hbDNNGetInputCount(&input_count, dnn_handle);
-  if (input_count < 1) {
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  hbDNNTensorProperties props;
-  ret = hbDNNGetInputTensorProperties(&props, dnn_handle, 0);
-  if (ret != 0 || props.validShape.numDimensions < 4) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNGetInputTensorProperties failed: %d", ret);
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  // NV12 模型输入 0 = Y plane，NHWC [1, H, W, 1]，U8；
-  // featuremap 模型输入 0 = 逻辑 x，NCHW [1, 3, H, W]，F32。
-  if (props.tensorType == HB_DNN_TENSOR_TYPE_U8) {
-    h = props.validShape.dimensionSize[1];
-    w = props.validShape.dimensionSize[2];
-  } else {
-    h = props.validShape.dimensionSize[2];
-    w = props.validShape.dimensionSize[3];
-  }
-  hbDNNRelease(packed_dnn);
-  if (w <= 0 || h <= 0) return -1;
   return 0;
 }
 
@@ -425,7 +401,30 @@ void MonoOcrDetectionNode::RosImgProcess(const sensor_msgs::msg::Image::ConstSha
 }
 
 #ifdef SHARED_MEM_ENABLED
-void MonoOcrDetectionNode::SharedMemImgProcess(const hbm_img_msgs::msg::HbmMsg2160P::ConstSharedPtr msg) {
+void MonoOcrDetectionNode::SharedMemImgProcess(const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr msg) {
+  if (!rclcpp::ok() || !msg) return;
+
+  std::stringstream ss;
+  ss << "Recved img encoding: "
+     << std::string(reinterpret_cast<const char *>(msg->encoding.data()))
+     << ", h: " << msg->height << ", w: " << msg->width
+     << ", step: " << msg->step << ", index: " << msg->index
+     << ", stamp: " << msg->time_stamp.sec << "_"
+     << msg->time_stamp.nanosec << ", data size: " << msg->data_size;
+  RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+  
+  // 立即拷贝并释放共享内存 loan：vdec 输出缓冲池要等所有订阅者释放 loan
+  // 才能回收，det 的预处理+推理期间一直持有会拖垮整条链路的帧龄。
+  // 12.4MB memcpy ~5ms，远小于下游处理耗时。
+  std::vector<uint8_t> frame_copy(msg->data.data(),
+                                  msg->data.data() + msg->data_size);
+  ProcessSharedMemNv12(frame_copy.data(),
+                       msg->height, msg->width,
+                       std::string(reinterpret_cast<const char *>(msg->encoding.data())),
+                       msg->time_stamp);
+}
+
+void MonoOcrDetectionNode::SharedMem2160PImgProcess(const hbm_img_msgs::msg::HbmMsg2160P::ConstSharedPtr msg) {
   if (!rclcpp::ok() || !msg) return;
 
   std::stringstream ss;

@@ -1,5 +1,9 @@
 # Changelog for package hand_lmk_detection
 
+tros_0.2.0 (2026-11-04)
+------------------
+1. 新增 RDK X5 平台适配。
+
 tros_0.1.1 (2026-10-20)
 ------------------
 1. 修复det节点推理时候web显示异常问题。

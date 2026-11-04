@@ -32,7 +32,7 @@ def generate_launch_description():
     os.system("cp -rn " + mono_ocr_path + "/config/. ./config/ 2>/dev/null")
 
     config_file_launch_arg = DeclareLaunchArgument(
-        "mono_ocr_detection_config_file", default_value=TextSubstitution(text="config/mono_ocr_detection_workconfig.json")
+        "mono_ocr_detection_config_file", default_value=TextSubstitution(text="config/mono_ocr_detection_4k_workconfig.json")
     )
     image_width_launch_arg = DeclareLaunchArgument(
         "mono_ocr_detection_image_width", default_value=TextSubstitution(text="3840")
@@ -82,8 +82,8 @@ def generate_launch_description():
             launch_arguments={
                 'publish_image_source': LaunchConfiguration('publish_image_source'),
                 'publish_message_topic_name': '/hbmem_img',
+                'publish_resolution': '2160P',
                 'publish_image_format': 'jpg',
-                'publish_out_msg_type': '2160p',
                 'publish_is_shared_mem': 'True',
                 'publish_is_compressed_img_pub': 'False',
                 'publish_fps': '5'
@@ -123,12 +123,11 @@ def generate_launch_description():
         launch_arguments={
             'codec_in_mode': 'shared_mem', 
             'codec_out_mode': 'ros',
-            'codec_in_msg_type': '2160p', 
+            'codec_resolution': '2160P',
             'codec_in_format': 'nv12',
             'codec_out_format': 'jpeg',
             'codec_sub_topic': '/hbmem_img',
-            'codec_pub_topic': '/image',
-            'codec_output_framerate': '5'
+            'codec_pub_topic': '/image'
         }.items()
     )
 
@@ -138,14 +137,12 @@ def generate_launch_description():
                          'launch/hobot_codec_decode.launch.py')),
         launch_arguments={
             'codec_in_mode': 'ros',
-            'codec_in_width': '3840',
-            'codec_in_height': '2160',
             'codec_out_mode': 'shared_mem',
             'codec_sub_topic': '/image',
             'codec_out_format': 'nv12',
             # usb 为 4K 相机：解码输出走 2160P 档（HbmMsg2160P），
             # 默认 1080p 档缓冲只有 6.2MB，4K NV12(12.4MB) 会溢出
-            'codec_out_msg_type': '2160p',
+            'codec_resolution': '2160P',
             'codec_pub_topic': '/hbmem_img'
         }.items()
     )
@@ -170,10 +167,11 @@ def generate_launch_description():
             {"dump_render_img": LaunchConfiguration("mono_ocr_detection_dump_render_img")},
             {"ai_msg_pub_topic_name": LaunchConfiguration("mono_ocr_detection_msg_pub_topic_name")},
             {'stale_threshold_ms': 2000},
+            {'resolution': '2160P'},
             # 算法固定订阅 HbmMsg2160P 全分辨率帧，话题与图片源对齐
             {"sharedmem_img_topic_name": "/hbmem_img"}
         ],
-        arguments=['--ros-args', '--log-level', 'info']
+        arguments=['--ros-args', '--log-level', 'warn']
     )
 
     shared_mem_node = IncludeLaunchDescription(
