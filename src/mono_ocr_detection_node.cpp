@@ -92,12 +92,11 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   this->declare_parameter<std::string>("image", image_file_);
   this->declare_parameter<int>("dump_render_img", dump_render_img_);
   this->declare_parameter<int>("is_shared_mem_sub", is_shared_mem_sub_);
+  this->declare_parameter<std::string>("ros_img_sub_topic_name", ros_img_sub_topic_name_);
   this->declare_parameter<std::string>("ai_msg_pub_topic_name", ai_msg_pub_topic_name_);
   // 模型选择参数：非空时覆盖 workconfig 里的同名配置（用于免改配置切换模型）
-  this->declare_parameter<std::string>("model_file", "");
-  this->declare_parameter<std::string>("model_name", "");
+  this->declare_parameter<std::string>("resolution", "1080P");
   // task_num 覆盖：大分辨率模型（4K）单实例 ION 占用大，需降低并行任务数
-  this->declare_parameter<int>("task_num", 0);
   this->declare_parameter<std::string>("sharedmem_img_topic_name",
                                        sharedmem_img_topic_name_);
   this->get_parameter<std::string>("config_file", config_file_);
@@ -105,7 +104,24 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   this->get_parameter<std::string>("image", image_file_);
   this->get_parameter<int>("dump_render_img", dump_render_img_);
   this->get_parameter<int>("is_shared_mem_sub", is_shared_mem_sub_);
+  this->get_parameter<std::string>("ros_img_sub_topic_name", ros_img_sub_topic_name_);
   this->get_parameter<std::string>("ai_msg_pub_topic_name", ai_msg_pub_topic_name_);
+  this->get_parameter<std::string>("resolution", resolution_);
+  this->get_parameter<std::string>("sharedmem_img_topic_name", sharedmem_img_topic_name_);
+
+  RCLCPP_WARN_STREAM(this->get_logger(),
+    "Parameters:"
+    << std::setprecision(2) << std::fixed
+    << "\n\t        config_file: " << config_file_
+    << "\n\t        feed_type: " << feed_type_
+    << "\n\t        image: " << image_file_
+    << "\n\t        dump_render_img: " << dump_render_img_
+    << "\n\t        is_shared_mem_sub: " << is_shared_mem_sub_
+    << "\n\t        ros_img_sub_topic_name: " << ros_img_sub_topic_name_
+    << "\n\t        ai_msg_pub_topic_name: " << ai_msg_pub_topic_name_
+    << "\n\t        resolution: " << resolution_
+    << "\n\t        sharedmem_img_topic_name: " << sharedmem_img_topic_name_
+  );
 
   if (LoadConfig() != 0) {
     RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"), "Load config fail!");
@@ -130,7 +146,7 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   // 输入尺寸，查询成功则覆盖 workconfig 的值 —— 切换模型无需改配置。
   {
     int w = 0, h = 0;
-    if (QueryModelInputSizeFromHbm(w, h) == 0 &&
+    if (GetModelInputSize(0, w, h) == 0 &&
         (w != model_input_width_ || h != model_input_height_)) {
       RCLCPP_INFO(rclcpp::get_logger("mono_ocr_detection"),
                   "Model input size auto-detected: %dx%d (config had %dx%d, override)",
@@ -154,14 +170,25 @@ MonoOcrDetectionNode::MonoOcrDetectionNode(const std::string &node_name, const N
   } else if (feed_type_ == 1) {
     if (is_shared_mem_sub_) {
 #ifdef SHARED_MEM_ENABLED
+      if (resolution_ == "1080P") {
+        sharedmem_img_subscription_ =
+            this->create_subscription<hbm_img_msgs::msg::HbmMsg1080P>(
+                sharedmem_img_topic_name_, rclcpp::SensorDataQoS().keep_last(1),
+                std::bind(&MonoOcrDetectionNode::SharedMemImgProcess, this,
+                          std::placeholders::_1));
+      } else if (resolution_ == "2160P") {
       sharedmem_img_subscription_4k_ =
           this->create_subscription<hbm_img_msgs::msg::HbmMsg2160P>(
-              sharedmem_img_topic_name_, rclcpp::SensorDataQoS(),
-              std::bind(&MonoOcrDetectionNode::SharedMemImgProcess, this,
+              sharedmem_img_topic_name_, rclcpp::SensorDataQoS().keep_last(1),
+              std::bind(&MonoOcrDetectionNode::SharedMem2160PImgProcess, this,
                         std::placeholders::_1));
       RCLCPP_WARN(rclcpp::get_logger("mono_ocr_detection"),
                   "Subscribe 4K shared mem img: %s (HbmMsg2160P)",
                   sharedmem_img_topic_name_.c_str());
+      } else {
+        RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
+                     "Unsupported shared mem resolution: %s", resolution_.c_str());
+      }     
 #else
       RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"), "Unsupport shared mem");
 #endif
@@ -224,55 +251,6 @@ int MonoOcrDetectionNode::LoadConfig() {
                  config_file_.c_str());
     return -1;
   }
-  return 0;
-}
-
-int MonoOcrDetectionNode::QueryModelInputSizeFromHbm(int &w, int &h) {
-  // 直接用 hbDNN 原生 API 查询 NV12 双输入模型的 Y plane 形状：
-  // x_y validShape = [1, H, W, 1]（dnn_node 的 GetModelInputSize 按 NCHW
-  // 解析 NHWC 会得到 width=1，这里绕开它）。
-  hbDNNPackedHandle_t packed_dnn = nullptr;
-  hbDNNHandle_t dnn_handle = nullptr;
-  const char *model_file = model_file_name_.c_str();
-  int ret = hbDNNInitializeFromFiles(&packed_dnn, &model_file, 1);
-  if (ret != 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNInitializeFromFiles(%s) failed: %d", model_file, ret);
-    return -1;
-  }
-  const char *name = model_name_.empty() ? nullptr : model_name_.c_str();
-  ret = hbDNNGetModelHandle(&dnn_handle, packed_dnn, name);
-  if (ret != 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNGetModelHandle(%s) failed: %d", name, ret);
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  int32_t input_count = 0;
-  hbDNNGetInputCount(&input_count, dnn_handle);
-  if (input_count < 1) {
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  hbDNNTensorProperties props;
-  ret = hbDNNGetInputTensorProperties(&props, dnn_handle, 0);
-  if (ret != 0 || props.validShape.numDimensions < 4) {
-    RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
-                 "hbDNNGetInputTensorProperties failed: %d", ret);
-    hbDNNRelease(packed_dnn);
-    return -1;
-  }
-  // NV12 模型输入 0 = Y plane，NHWC [1, H, W, 1]，U8；
-  // featuremap 模型输入 0 = 逻辑 x，NCHW [1, 3, H, W]，F32。
-  if (props.tensorType == HB_DNN_TENSOR_TYPE_U8) {
-    h = props.validShape.dimensionSize[1];
-    w = props.validShape.dimensionSize[2];
-  } else {
-    h = props.validShape.dimensionSize[2];
-    w = props.validShape.dimensionSize[3];
-  }
-  hbDNNRelease(packed_dnn);
-  if (w <= 0 || h <= 0) return -1;
   return 0;
 }
 
@@ -423,7 +401,7 @@ void MonoOcrDetectionNode::RosImgProcess(const sensor_msgs::msg::Image::ConstSha
 }
 
 #ifdef SHARED_MEM_ENABLED
-void MonoOcrDetectionNode::SharedMemImgProcess(const hbm_img_msgs::msg::HbmMsg2160P::ConstSharedPtr msg) {
+void MonoOcrDetectionNode::SharedMemImgProcess(const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr msg) {
   if (!rclcpp::ok() || !msg) return;
 
   std::stringstream ss;
@@ -435,7 +413,35 @@ void MonoOcrDetectionNode::SharedMemImgProcess(const hbm_img_msgs::msg::HbmMsg21
      << msg->time_stamp.nanosec << ", data size: " << msg->data_size;
   RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
   
-  ProcessSharedMemNv12(reinterpret_cast<const uint8_t *>(msg->data.data()),
+  // 立即拷贝并释放共享内存 loan：vdec 输出缓冲池要等所有订阅者释放 loan
+  // 才能回收，det 的预处理+推理期间一直持有会拖垮整条链路的帧龄。
+  // 12.4MB memcpy ~5ms，远小于下游处理耗时。
+  std::vector<uint8_t> frame_copy(msg->data.data(),
+                                  msg->data.data() + msg->data_size);
+  ProcessSharedMemNv12(frame_copy.data(),
+                       msg->height, msg->width,
+                       std::string(reinterpret_cast<const char *>(msg->encoding.data())),
+                       msg->time_stamp);
+}
+
+void MonoOcrDetectionNode::SharedMem2160PImgProcess(const hbm_img_msgs::msg::HbmMsg2160P::ConstSharedPtr msg) {
+  if (!rclcpp::ok() || !msg) return;
+
+  std::stringstream ss;
+  ss << "Recved img encoding: "
+     << std::string(reinterpret_cast<const char *>(msg->encoding.data()))
+     << ", h: " << msg->height << ", w: " << msg->width
+     << ", step: " << msg->step << ", index: " << msg->index
+     << ", stamp: " << msg->time_stamp.sec << "_"
+     << msg->time_stamp.nanosec << ", data size: " << msg->data_size;
+  RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+  
+  // 立即拷贝并释放共享内存 loan：vdec 输出缓冲池要等所有订阅者释放 loan
+  // 才能回收，det 的预处理+推理期间一直持有会拖垮整条链路的帧龄。
+  // 12.4MB memcpy ~5ms，远小于下游处理耗时。
+  std::vector<uint8_t> frame_copy(msg->data.data(),
+                                  msg->data.data() + msg->data_size);
+  ProcessSharedMemNv12(frame_copy.data(),
                        msg->height, msg->width,
                        std::string(reinterpret_cast<const char *>(msg->encoding.data())),
                        msg->time_stamp);
@@ -446,40 +452,63 @@ void MonoOcrDetectionNode::ProcessSharedMemNv12(const uint8_t *data,
                                                 uint32_t msg_w,
                                                 const std::string &encoding,
                                                 const builtin_interfaces::msg::Time &stamp) {
-  // // 丢旧帧：det 4K 推理 ~210ms/帧跟不上输入速率时，hbmem 缓冲池会积压到
-  // // 池深（实测可达 ~3s），导致 1) 识别结果时间戳严重滞后；2) websocket 按
-  // // stamp 配对失败（±600ms 窗口）web 黑屏。只处理 400ms 内的新鲜帧。
-  // {
-  //   const auto now = std::chrono::system_clock::now();
-  //   const auto age = now - std::chrono::system_clock::time_point(
-  //       std::chrono::seconds(stamp.sec) +
-  //       std::chrono::nanoseconds(stamp.nanosec));
-  //   const auto age_ms =
-  //       std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
-  //   if (age_ms > stale_threshold_ms_) {
-  //     static int drop_cnt = 0;
-  //     if (++drop_cnt % 30 == 1) {
-  //       RCLCPP_WARN(rclcpp::get_logger("mono_ocr_detection"),
-  //                   "drop stale frame: age %ld ms (dropped %d)", age_ms, drop_cnt);
-  //     }
-  //     return;
-  //   }
-  // }
+  // 丢旧帧：det 4K 推理 ~210ms/帧跟不上输入速率时，hbmem 缓冲池会积压到
+  // 池深（实测 AI 结果滞后可达 ~1.8s）。只处理新鲜帧，让推理始终作用在
+  // 最新画面上；过老帧直接丢弃（阈值 stale_threshold_ms，默认 400ms）。
+  {
+    const auto now = std::chrono::system_clock::now();
+    const auto age = now - std::chrono::system_clock::time_point(
+        std::chrono::seconds(stamp.sec) +
+        std::chrono::nanoseconds(stamp.nanosec));
+    const auto age_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
+    if (age_ms > stale_threshold_ms_) {
+      static int drop_cnt = 0;
+      if (++drop_cnt % 30 == 1) {
+        RCLCPP_WARN(rclcpp::get_logger("mono_ocr_detection"),
+                    "drop stale frame: age %ld ms (dropped %d)", age_ms, drop_cnt);
+      }
+      return;
+    }
+  }
   if (!rclcpp::ok()) return;
   auto dnn_output = std::make_shared<MonoOcrDetectionOutput>();
   std::shared_ptr<hobot::dnn_node::NV12PyramidInput> pyramid = nullptr;
 
   if ("nv12" == encoding) {
-    // 不做 CPU 预缩放：原始帧直接建 pyramid，由 BPU NV12 预处理一次拉伸到
-    // 模型输入。双重重采样会模糊小字（4K 模型小标注漏检的根因），且省 CPU。
-    // parser 输出的框在模型空间，resized 需置为模型输入尺寸，PostProcess 才会
-    // 按 img/model 的比值把框回投到原图分辨率（resized=msg 会导致比例恒 1.0，
-    // web 叠加时框整体偏移）。
-    dnn_output->resized_h = model_input_height_;
-    dnn_output->resized_w = model_input_width_;
-    pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
-        reinterpret_cast<const char*>(data), msg_h, msg_w,
-        model_input_height_, model_input_width_);
+    // GetNV12PyramidFromNV12Img 不缩放：仅把输入左上角 min(输入,模型) 区域
+    // 拷入模型缓冲（超出部分成为盲区）。因此：
+    //  - 帧与模型等尺寸（相机 3840x2160）：1:1 直通，零重采样保清晰度；
+    //  - 其他尺寸（fb 任意 4K 图）：等比 letterbox 缩放到模型内（左上对齐、
+    //    右下补 0），保证全图覆盖；resized 记录内容区尺寸，PostProcess 按
+    //    img/resized 的比值把框回投到原图分辨率。
+    if (msg_w == static_cast<uint32_t>(model_input_width_) &&
+        msg_h == static_cast<uint32_t>(model_input_height_)) {
+      dnn_output->resized_h = msg_h;
+      dnn_output->resized_w = msg_w;
+      pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
+          reinterpret_cast<const char*>(data), msg_h, msg_w,
+          model_input_height_, model_input_width_);
+    } else {
+      // 大图：复用 ResizeNV12Img（hobotcv 等比缩放），内容区尺寸记入 resized，
+      // PostProcess 按 img/resized 回投；金字塔补边由 GetNV12PyramidFromNV12Img
+      // 完成（内容贴左上、右下补 0），全图覆盖无盲区。
+      cv::Mat out_img;
+      if (ResizeNV12Img(reinterpret_cast<const char *>(data),
+                        msg_h, msg_w,
+                        dnn_output->resized_h, dnn_output->resized_w,
+                        model_input_height_, model_input_width_,
+                        out_img, dnn_output->ratio) < 0) {
+        RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
+                     "Resize nv12 img fail!");
+        return;
+      }
+      uint32_t out_w = out_img.cols;
+      uint32_t out_h = out_img.rows * 2 / 3;
+      pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(
+          reinterpret_cast<const char *>(out_img.data),
+          out_h, out_w, model_input_height_, model_input_width_);
+    }
   } else {
     RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"),
                  "Unsupported img encoding: %s, only nv12 for shared mem.",
@@ -515,6 +544,26 @@ int MonoOcrDetectionNode::PostProcess(const std::shared_ptr<DnnNodeOutput> &node
   if (node_output->output_tensors.empty()) {
     RCLCPP_ERROR(rclcpp::get_logger("mono_ocr_detection"), "Invalid output_tensors");
     return -1;
+  }
+
+  // 发布延迟控制：帧在 dnn 推理队列里排队期间会继续老化（输入略快于推理
+  // 速率时队列只进不出），过老的结果不再解析和发布，输出流延迟收敛到
+  // stale_threshold_ms + 单帧推理时间。
+  {
+    const auto now = std::chrono::system_clock::now();
+    const auto age = now - std::chrono::system_clock::time_point(
+        std::chrono::seconds(pout->msg_header.stamp.sec) +
+        std::chrono::nanoseconds(pout->msg_header.stamp.nanosec));
+    const auto age_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(age).count();
+    if (age_ms > stale_threshold_ms_) {
+      static int drop_cnt = 0;
+      if (++drop_cnt % 30 == 1) {
+        RCLCPP_WARN(rclcpp::get_logger("mono_ocr_detection"),
+                    "drop stale result: age %ld ms (dropped %d)", age_ms, drop_cnt);
+      }
+      return 0;
+    }
   }
 
   auto det_result = std::make_shared<DnnParserResult>();
@@ -578,6 +627,8 @@ int MonoOcrDetectionNode::PostProcess(const std::shared_ptr<DnnNodeOutput> &node
     }
   }
 
+  ai_msgs::msg::Perf perf_post;
+  struct timespec ts2 = {0, 0};
   if (node_output->rt_stat) {
     ai_msgs::msg::Perf perf;
     perf.set__type("mono_ocr_detection_infer");
@@ -585,11 +636,8 @@ int MonoOcrDetectionNode::PostProcess(const std::shared_ptr<DnnNodeOutput> &node
     perf.stamp_end = ConvertToRosTime(node_output->rt_stat->infer_timespec_end);
     perf.set__time_ms_duration(node_output->rt_stat->infer_time_ms);
     pub_data->perfs.push_back(perf);
-
-    ai_msgs::msg::Perf perf_post;
     perf_post.set__type("mono_ocr_detection_postprocess");
     perf_post.stamp_start = ConvertToRosTime(ts);
-    struct timespec ts2 = {0, 0};
     clock_gettime(CLOCK_REALTIME, &ts2);
     perf_post.stamp_end = ConvertToRosTime(ts2);
     perf_post.set__time_ms_duration(CalTimeMsDuration(perf_post.stamp_start, perf_post.stamp_end));
@@ -613,6 +661,33 @@ int MonoOcrDetectionNode::PostProcess(const std::shared_ptr<DnnNodeOutput> &node
     }
   }
   pub_data->set__fps(output_fps_);
+
+  // 算法运行情况日志：帧率 + 各级耗时（收帧延迟/前处理/推理/后处理/整链）
+  if (node_output->rt_stat && node_output->rt_stat->fps_updated) {
+    auto now_ts = std::chrono::system_clock::now();
+    auto stamp_tp = std::chrono::system_clock::time_point(
+        std::chrono::seconds(pout->msg_header.stamp.sec) +
+        std::chrono::nanoseconds(pout->msg_header.stamp.nanosec));
+    int recved_delay_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_ts - stamp_tp).count());
+    int preprocess_ms = CalTimeMsDuration(pout->perf_preprocess.stamp_start,
+                                          pout->perf_preprocess.stamp_end);
+    int pipeline_ms = recved_delay_ms;
+    RCLCPP_WARN(this->get_logger(),
+                "Sub img fps: %.2f, Smart fps: %.2f, "
+                "recved img time delay ms: %d, "
+                "pre process time ms: %d, infer time ms: %d, "
+                "post process time ms: %d, "
+                "pipeline time ms: %d",
+                node_output->rt_stat->input_fps,
+                node_output->rt_stat->output_fps,
+                recved_delay_ms,
+                preprocess_ms,
+                node_output->rt_stat->infer_time_ms,
+                static_cast<int>(perf_post.time_ms_duration),
+                pipeline_ms);
+  }
 
   msg_publisher_->publish(std::move(pub_data));
   return 0;

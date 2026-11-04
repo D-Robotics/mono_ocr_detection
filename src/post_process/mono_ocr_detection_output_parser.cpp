@@ -202,15 +202,15 @@ static int PostProcess(
     // 5. 框内平均置信度（用降采样概率图，不是二值图 bitmap）
     cv::Rect bbox = rect.boundingRect();
     bbox &= cv::Rect(0, 0, pw, ph);
-    if (bbox.width <= 0 || bbox.height <= 0) continue;
+    if (bbox.width <= 2 || bbox.height <= 2) continue;
     float score = cv::mean(prob_s(bbox))[0];
-    RCLCPP_INFO(rclcpp::get_logger("mono_ocr_detection_parser"),
-                "contour %d: bbox=%dx%d score=%f short_side=%f",
-                i, bbox.width, bbox.height, score, short_side);
     if (score < g_config.box_thresh) {
       filtered_score++;
       continue;
     }
+    RCLCPP_INFO(rclcpp::get_logger("mono_ocr_detection_parser"),
+                "contour %d: bbox=%dx%d score=%f short_side=%f",
+                i, bbox.width, bbox.height, score, short_side);
 
     // 6. 输出框（半分辨率坐标 ×step 映射回模型坐标系，node 再映射回原图）
     cv::Point2f pts[4];

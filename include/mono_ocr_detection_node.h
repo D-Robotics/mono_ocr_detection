@@ -58,14 +58,12 @@ class MonoOcrDetectionNode : public DnnNode {
   int LoadConfig();
   int LoadVocabulary();
 
-  // 从 hbm 模型直接查询 NV12 输入的 H/W（Y plane validShape [1,H,W,1]），
-  // 用于模型自动适配（切换模型无需改 workconfig 的 model_input_width/height）
-  int QueryModelInputSizeFromHbm(int &w, int &h);
-
   int FeedFromLocal();
 
 #ifdef SHARED_MEM_ENABLED
   void SharedMemImgProcess(
+      const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr msg);
+  void SharedMem2160PImgProcess(
       const hbm_img_msgs::msg::HbmMsg2160P::ConstSharedPtr msg);
   // 两种共享内存消息的公共处理（字段同构：encoding/width/height/data）
   // stamp 用于输出消息头：websocket 按 smart/image 时间戳配对推送，必须透传
@@ -85,11 +83,14 @@ class MonoOcrDetectionNode : public DnnNode {
   std::string config_file_ = "config/mono_ocr_detection_workconfig.json";
   std::string model_file_name_ = "";
   std::string model_name_ = "";
+  std::string resolution_ = "1080P";
   std::string vocabulary_file_name_ = "";
   std::string image_file_ = "config/component.jpg";
   int feed_type_ = 0;
   // 陈旧帧丢弃阈值 ms（参数 stale_threshold_ms）
-  int stale_threshold_ms_ = 400;
+  // hobotcv letterbox 下 det 消费 ~3fps，帧龄 ~70ms；门槛 800ms 覆盖
+  // 输入超速时的积压老化（实测积压帧龄 ~0.9s 时应限输入帧率而非调高门槛）
+  int stale_threshold_ms_ = 800;
   int is_shared_mem_sub_ = 0;
   int dump_render_img_ = 0;
   int task_num_ = 4;
