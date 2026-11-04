@@ -2,7 +2,7 @@
 
 English | [简体中文](README_cn.md)
 
-mono_ocr_detection algorithm node based on dnn_node. JSON config driven
+mono_ocr_detection package, [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) algorithm quanti model on RDK platform based on dnn_node.
 
 ## Configuration
 

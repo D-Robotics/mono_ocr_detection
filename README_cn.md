@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-基于 dnn_node 的 mono_ocr_detection 算法节点。JSON 配置驱动。
+mono_ocr_detection 算法功能包, 基于 dnn_node 推理框架。是对 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) ppocrv6 模型的量化部署。
 
 ## 配置
 
