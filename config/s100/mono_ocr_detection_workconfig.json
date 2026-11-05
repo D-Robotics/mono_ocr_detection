@@ -1,5 +1,5 @@
 {
-  "model_file": "config/ppocrv6_medium_det_int8_640_m_m.hbm",
+  "model_file": "config/ppocrv6_medium_det_int8_640_m.hbm",
   "task_num": 1,
   "class_num": 1,
   "thresh": 0.2,
